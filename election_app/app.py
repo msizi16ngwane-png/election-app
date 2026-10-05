@@ -1,18 +1,38 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import os
+import joblib
 import pickle
 import gzip
-import os
 import time
+import pandas as pd
+import numpy as np
+import streamlit as st
 
 # ==========================================
-# PAGE CONFIGURATION
+# PAGE CONFIGURATION & CUSTOM STYLING
 # ==========================================
 st.set_page_config(
     page_title="eThekwini Election Projection Model",
     page_icon="🗳️",
     layout="wide"
+)
+
+# Custom Background Styling
+CUSTOM_BACKGROUND_COLOR = "#f0f2f6"
+
+st.markdown(
+    f"""
+    <style>
+    /* Main app background */
+    .stApp {{
+        background-color: {CUSTOM_BACKGROUND_COLOR};
+    }}
+    /* Sidebar background */
+    [data-testid="stSidebar"] {{
+        background-color: #ffffff;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
 # ==========================================
@@ -26,29 +46,38 @@ if "projection_data" not in st.session_state:
 
 
 # ==========================================
-# MODEL & SCALER LOADING
+# DYNAMIC MODEL & SCALER LOADING
+# Resolves paths inside 'election_app' folder
 # ==========================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 @st.cache_resource
 def load_ml_assets():
     model = None
     scaler = None
 
-    # Load Model (Supports both .pkl.gz and .pkl)
+    # Resolve paths relative to where app.py lives
+    gz_model_path = os.path.join(BASE_DIR, "gb_model.pkl.gz")
+    pkl_model_path = os.path.join(BASE_DIR, "gb_model.pkl")
+    scaler_path = os.path.join(BASE_DIR, "scaler.pkl")
+    joblib_scaler_path = os.path.join(BASE_DIR, "scaler.joblib")
+
+    # 1. Load Model (Supports joblib, pickle, and compressed .gz)
     try:
-        if os.path.exists("gb_model.pkl.gz"):
-            with gzip.open("gb_model.pkl.gz", "rb") as f:
-                model = pickle.load(f)
-        elif os.path.exists("gb_model.pkl"):
-            with open("gb_model.pkl", "rb") as f:
-                model = pickle.load(f)
+        if os.path.exists(gz_model_path):
+            with gzip.open(gz_model_path, "rb") as f:
+                model = joblib.load(f)
+        elif os.path.exists(pkl_model_path):
+            model = joblib.load(pkl_model_path)
     except Exception as e:
         st.error(f"Error loading model: {e}")
 
-    # Load Scaler
+    # 2. Load Scaler (Supports both pickle and joblib)
     try:
-        if os.path.exists("scaler.pkl"):
-            with open("scaler.pkl", "rb") as f:
-                scaler = pickle.load(f)
+        if os.path.exists(scaler_path):
+            scaler = joblib.load(scaler_path)
+        elif os.path.exists(joblib_scaler_path):
+            scaler = joblib.load(joblib_scaler_path)
     except Exception as e:
         st.error(f"Error loading scaler: {e}")
 
@@ -75,9 +104,13 @@ menu = st.sidebar.radio(
 st.sidebar.divider()
 st.sidebar.subheader("📥 Download Project Datasets")
 
-# Download Uncleaned Dataset
-if os.path.exists("Water_Pipe_Leak.csv"):
-    with open("Water_Pipe_Leak.csv", "rb") as f:
+# Dynamic Dataset Paths
+raw_data_path = os.path.join(BASE_DIR, "2016 Dataset.csv")
+cleaned_data_path = os.path.join(BASE_DIR, "2021 Dataset.csv")
+
+# Download Historical Raw Dataset
+if os.path.exists(raw_data_path):
+    with open(raw_data_path, "rb") as f:
         st.sidebar.download_button(
             label="📥 Download Historical Raw Data",
             data=f.read(),
@@ -96,8 +129,8 @@ else:
     )
 
 # Download Cleaned Dataset
-if os.path.exists("Water_Pipe_Leak_Cleaned.csv"):
-    with open("Water_Pipe_Leak_Cleaned.csv", "rb") as f:
+if os.path.exists(cleaned_data_path):
+    with open(cleaned_data_path, "rb") as f:
         st.sidebar.download_button(
             label="📥 Download Processed Dataset",
             data=f.read(),
@@ -125,7 +158,7 @@ if menu == "📊 Projection Dashboard":
     st.write("Machine Learning Forecast using Gradient Boosting Model")
 
     if model is None:
-        st.warning("⚠️ Model binary (`gb_model.pkl` or `gb_model.pkl.gz`) not found. Operating in fallback algorithmic mode.")
+        st.warning("⚠️️ Model binary (`gb_model.pkl` or `gb_model.pkl.gz`) not found. Operating in fallback algorithmic mode.")
 
     st.divider()
     st.subheader("⚙️ Model Controls & Inputs")
@@ -194,7 +227,10 @@ if menu == "📊 Projection Dashboard":
 
         # Scale features if scaler exists
         if scaler is not None:
-            input_features = scaler.transform(input_df)
+            try:
+                input_features = scaler.transform(input_df)
+            except Exception:
+                input_features = input_df
         else:
             input_features = input_df
 
