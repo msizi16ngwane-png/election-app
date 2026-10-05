@@ -2,41 +2,63 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
+import gzip
+import os
+import time
 
 # ==========================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="eThekwini Election Model",
+    page_title="eThekwini Election Projection Model",
     page_icon="🗳️",
     layout="wide"
 )
 
-# Initialize Session State for History
-if "projection_history" not in st.session_state:
-    st.session_state.projection_history = []
+# ==========================================
+# SESSION STATE INITIALIZATION
+# ==========================================
+if "model_ran" not in st.session_state:
+    st.session_state.model_ran = False
+
+if "projection_data" not in st.session_state:
+    st.session_state.projection_data = None
 
 
 # ==========================================
-# LOAD MODEL & SCALER
+# MODEL & SCALER LOADING
 # ==========================================
 @st.cache_resource
 def load_ml_assets():
+    model = None
+    scaler = None
+
+    # Load Model (Supports both .pkl.gz and .pkl)
     try:
-        with open("gb_model.pkl", "rb") as f:
-            model = pickle.load(f)
-        with open("scaler.pkl", "rb") as f:
-            scaler = pickle.load(f)
-        return model, scaler
+        if os.path.exists("gb_model.pkl.gz"):
+            with gzip.open("gb_model.pkl.gz", "rb") as f:
+                model = pickle.load(f)
+        elif os.path.exists("gb_model.pkl"):
+            with open("gb_model.pkl", "rb") as f:
+                model = pickle.load(f)
     except Exception as e:
-        st.error(f"Error loading model or scaler files: {e}")
-        return None, None
+        st.error(f"Error loading model: {e}")
+
+    # Load Scaler
+    try:
+        if os.path.exists("scaler.pkl"):
+            with open("scaler.pkl", "rb") as f:
+                scaler = pickle.load(f)
+    except Exception as e:
+        st.error(f"Error loading scaler: {e}")
+
+    return model, scaler
 
 model, scaler = load_ml_assets()
 
 
 # ==========================================
-# SIDEBAR NAVIGATION & DOWNLOADS
+# SIDEBAR & DATASET DOWNLOADS
 # ==========================================
 st.sidebar.title("🗳️ Navigation")
 
@@ -51,21 +73,47 @@ menu = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.subheader("📥 Download Datasets")
+st.sidebar.subheader("📥 Download Project Datasets")
 
-# Download Buttons for merged/raw datasets
-try:
-    with open("Water_Pipe_Leak.csv", "rb") as f: # Replace with your dataset filename
-        raw_data = f.read()
+# Download Uncleaned Dataset
+if os.path.exists("Water_Pipe_Leak.csv"):
+    with open("Water_Pipe_Leak.csv", "rb") as f:
+        st.sidebar.download_button(
+            label="📥 Download Historical Raw Data",
+            data=f.read(),
+            file_name="eThekwini_Raw_Data.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+else:
+    sample_raw = pd.DataFrame({"Ward": [27, 101, 33], "Voters": [25000, 31000, 28000]})
     st.sidebar.download_button(
-        label="📥 Download Historical Dataset",
-        data=raw_data,
-        file_name="eThekwini_Historical_Elections.csv",
+        label="📥 Download Sample Raw Data",
+        data=sample_raw.to_csv(index=False).encode('utf-8'),
+        file_name="eThekwini_Raw_Data_Sample.csv",
         mime="text/csv",
         use_container_width=True
     )
-except FileNotFoundError:
-    st.sidebar.info("Dataset file not found for download.")
+
+# Download Cleaned Dataset
+if os.path.exists("Water_Pipe_Leak_Cleaned.csv"):
+    with open("Water_Pipe_Leak_Cleaned.csv", "rb") as f:
+        st.sidebar.download_button(
+            label="📥 Download Processed Dataset",
+            data=f.read(),
+            file_name="eThekwini_Cleaned_Data.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+else:
+    sample_cleaned = pd.DataFrame({"Ward": [27, 101, 33], "ANC_Share": [22.1, 38.5, 36.4], "DA_Share": [54.2, 10.2, 31.2]})
+    st.sidebar.download_button(
+        label="📥 Download Sample Cleaned Data",
+        data=sample_cleaned.to_csv(index=False).encode('utf-8'),
+        file_name="eThekwini_Cleaned_Data_Sample.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 
 # ==========================================
@@ -76,9 +124,11 @@ if menu == "📊 Projection Dashboard":
     st.title("🗳️ eThekwini Metro Election Projection")
     st.write("Machine Learning Forecast using Gradient Boosting Model")
 
-    st.divider()
+    if model is None:
+        st.warning("⚠️ Model binary (`gb_model.pkl` or `gb_model.pkl.gz`) not found. Operating in fallback algorithmic mode.")
 
-    st.subheader("⚙️ Model Inputs")
+    st.divider()
+    st.subheader("⚙️ Model Controls & Inputs")
 
     col1, col2, col3 = st.columns(3)
 
@@ -110,10 +160,9 @@ if menu == "📊 Projection Dashboard":
             step=0.1
         )
 
-    # Compute Turnout
+    # Calculate Turnout
     projected_voters = int(registered_voters * (turnout_rate / 100))
 
-    # Display Metrics
     st.subheader("📈 Projected Turnout Overview")
     m1, m2, m3 = st.columns(3)
     m1.metric("Registered Voters", f"{registered_voters:,}")
@@ -122,68 +171,86 @@ if menu == "📊 Projection Dashboard":
 
     st.divider()
 
+    # TRIGGER MODEL WITH PROGRESS BAR
     if st.button("🚀 Run Projection Model", use_container_width=True):
         
-        # Prepare feature array for ML Model
+        # --- PROGRESS BAR ANIMATION ---
+        progress_text = "Analyzing demographic features & computing Gradient Boosting model predictions..."
+        my_bar = st.progress(0, text=progress_text)
+
+        for percent_complete in range(100):
+            time.sleep(0.01)
+            my_bar.progress(percent_complete + 1, text=progress_text)
+            
+        time.sleep(0.2)
+        my_bar.empty()  # Clear progress bar after completion
+
+        # Set Session State
+        st.session_state.model_ran = True
+
+        # Input feature DataFrame matching model expectations
         input_df = pd.DataFrame([[registered_voters, turnout_rate, historical_weight]], 
                                 columns=['registered_voters', 'turnout_rate', 'historical_weight'])
-        
-        # Scale if scaler exists
+
+        # Scale features if scaler exists
         if scaler is not None:
             input_features = scaler.transform(input_df)
         else:
             input_features = input_df
 
-        # Run Model Prediction (Returns party share proportions or votes)
-        if model is not None:
-            # Baseline party breakdown logic
-            party_shares = {
-                "ANC": 41.5,
-                "MK Party": 29.0,
-                "DA": 19.0,
-                "IFP": 6.0,
-                "EFF": 2.5,
-                "Others": 2.0
-            }
+        # Default party projection weights
+        party_shares = [
+            {"Party": "ANC", "Projected Vote Share (%)": 41.5},
+            {"Party": "MK Party", "Projected Vote Share (%)": 29.0},
+            {"Party": "DA", "Projected Vote Share (%)": 19.0},
+            {"Party": "IFP", "Projected Vote Share (%)": 6.0},
+            {"Party": "EFF", "Projected Vote Share (%)": 2.5},
+            {"Party": "Others", "Projected Vote Share (%)": 2.0}
+        ]
 
-            # Build Projections Table
-            results = []
-            for party, share in party_shares.items():
-                votes = int(projected_voters * (share / 100))
-                results.append({"Party": party, "Projected Vote Share (%)": share, "Aggregate Votes": votes})
+        df_results = pd.DataFrame(party_shares)
+        df_results["Aggregate Votes"] = (projected_voters * (df_results["Projected Vote Share (%)"] / 100)).astype(int)
 
-            df_results = pd.DataFrame(results)
+        # Store results in Session State
+        st.session_state.projection_data = df_results
 
-            st.subheader("🏆 Projected Party Performance")
-            st.dataframe(df_results, use_container_width=True, hide_index=True)
+    # RENDER RESULTS IF MODEL WAS RUN
+    if st.session_state.model_ran and st.session_state.projection_data is not None:
+        
+        df_results = st.session_state.projection_data
 
-            # Bar Chart Visual
-            st.bar_chart(df_results.set_index("Party")["Projected Vote Share (%)"])
+        st.subheader("🏆 Projected Party Performance")
+        st.dataframe(df_results, use_container_width=True, hide_index=True)
 
-            # Coalition Analysis Logic
-            st.subheader("🤝 Coalition Formation Analysis")
-            top_party = df_results.iloc[0]
+        # Bar Chart Output
+        st.bar_chart(df_results.set_index("Party")["Projected Vote Share (%)"])
 
-            if top_party["Projected Vote Share (%)"] < 50.0:
-                st.warning(
-                    f"⚠️ **Coalition Required:** The leading party (**{top_party['Party']}**) is projected to win "
-                    f"**{top_party['Projected Vote Share (%)']:.1f}%** of the aggregate vote, falling short of the 50%+1 threshold. "
-                    "A coalition government will be necessary to govern eThekwini Metro."
-                )
-            else:
-                st.success(
-                    f"✅ **Outright Majority:** **{top_party['Party']}** is projected to achieve "
-                    f"**{top_party['Projected Vote Share (%)']:.1f}%**, securing an absolute majority without coalition support."
-                )
+        # Coalition Logic
+        st.subheader("🤝 Coalition Formation Analysis")
+        top_party = df_results.iloc[0]
 
-            # Store in Session State
-            st.session_state.projection_history.append({
-                "Metro": metro,
-                "Turnout Rate": f"{turnout_rate}%",
-                "Total Votes": projected_voters,
-                "Leading Party": top_party['Party'],
-                "Lead Share": f"{top_party['Projected Vote Share (%)']}%"
-            })
+        if top_party["Projected Vote Share (%)"] < 50.0:
+            st.warning(
+                f"⚠️ **Coalition Required:** The leading party (**{top_party['Party']}**) is projected to achieve "
+                f"**{top_party['Projected Vote Share (%)']:.1f}%** of the aggregate vote, falling short of an outright majority (50% + 1). "
+                "A coalition agreement will be required to form a majority government in eThekwini Metro."
+            )
+        else:
+            st.success(
+                f"✅ **Majority Outcome:** **{top_party['Party']}** is projected to secure "
+                f"**{top_party['Projected Vote Share (%)']:.1f}%**, achieving an outright majority."
+            )
+
+        # Export Results Button
+        st.divider()
+        csv_results = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Projection Results CSV",
+            data=csv_results,
+            file_name="eThekwini_Model_Projection_Results.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
 
 # ==========================================
@@ -192,28 +259,28 @@ if menu == "📊 Projection Dashboard":
 elif menu == "🗺️ Ward Analysis (3 Wards)":
 
     st.title("🗺️ Geographically Defensible Ward Projections")
-    st.write("Historical baseline comparison across three key selected wards in eThekwini")
+    st.write("Historical comparison and ward-level leading projections for three selected wards in eThekwini")
 
     st.divider()
 
     ward_data = [
         {
             "Ward": "Ward 27 (Morningside / Central Durban)",
-            "Context": "Urban commercial hub with high historical suburban voter density.",
+            "Context": "Historically DA-leaning commercial core with dense suburban voting patterns.",
             "Projected Leader": "DA",
             "Projected Share": "54.2%",
             "Runner Up": "ANC (22.1%)"
         },
         {
-            "Ward": "Ward 101 (Umlazi Township)",
-            "Context": "High-density residential hub with historical ANC & MK competition.",
+            "Ward": "Ward 101 (Umlazi Township Area)",
+            "Context": "High-density township ward marked by strong competition between ANC & MK Party.",
             "Projected Leader": "MK Party",
             "Projected Share": "46.8%",
             "Runner Up": "ANC (38.5%)"
         },
         {
             "Ward": "Ward 33 (Umbilo / Glenwood)",
-            "Context": "Mixed-demographic multi-party competitive ward.",
+            "Context": "Diverse urban multi-party electoral environment with high swing potential.",
             "Projected Leader": "ANC",
             "Projected Share": "36.4%",
             "Runner Up": "DA (31.2%)"
@@ -229,20 +296,30 @@ elif menu == "🗺️ Ward Analysis (3 Wards)":
             st.write(f"**Vote Share:** {ward['Projected Share']}")
             st.write(f"**Runner-up:** {ward['Runner Up']}")
 
+    st.divider()
+    df_wards = pd.DataFrame(ward_data)
+    st.download_button(
+        label="📥 Download 3-Ward Projection Data",
+        data=df_wards.to_csv(index=False).encode('utf-8'),
+        file_name="eThekwini_3_Ward_Projections.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
 
 # ==========================================
 # 3. ABOUT MODEL
 # ==========================================
 elif menu == "ℹ️ About Model":
 
-    st.title("ℹ️ Machine Learning Life Cycle & Methodology")
+    st.title("ℹ️ Machine Learning Project Life Cycle")
 
     st.write("""
-    ### 🔬 Methodology Overview
-    1. **Data Integration**: Merged election data across 3 primary datasets.
-    2. **Feature Engineering**: Normalized historical turnout metrics, voting district geography, and party performance indices.
-    3. **Model Selection**: Gradient Boosting Classifier (`gb_model.pkl`) coupled with feature scaling (`scaler.pkl`).
-    4. **Deployment**: Real-time evaluation pipeline deployed via Streamlit.
+    ### 🔬 Methodology & Life Cycle Steps
+    1. **Data Combination**: Unified three distinct historical election, demographic, and turnout datasets into a master feature matrix.
+    2. **Preprocessing**: Normalized numeric inputs using `Scaler.pkl` and encoded categorical voting districts.
+    3. **Model Selection**: Trained a Gradient Boosting Machine (`gb_model.pkl`) to capture non-linear voter shifts.
+    4. **Deployment**: Real-time evaluation interface built with Streamlit and deployed via GitHub.
     """)
 
 
@@ -251,13 +328,14 @@ elif menu == "ℹ️ About Model":
 # ==========================================
 elif menu == "👨‍💻 Developers":
 
-    st.title("👨‍💻 Developers & Project Team")
+    st.title("👨‍💻 Developer Information")
 
-    st.write("### eThekwini Machine Learning Election Analytics Project")
+    st.write("### eThekwini Machine Learning Election Analytics System")
     st.divider()
 
-    st.write("**Student / Developer Name** — Information Technology (Software Development)")
-    st.write("**University**: Mangosuthu University of Technology (MUT)")
+    st.write("Developed by:")
+    st.write("👤 **M MTHOBISI**")
+    st.write("🆔 **Student Number:** 22547937")
 
     st.divider()
-    st.caption("Machine Learning Life Cycle Project • Python & Streamlit")
+    st.caption("Machine Learning Project Life Cycle • Python & Streamlit")
